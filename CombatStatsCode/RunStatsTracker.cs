@@ -1,56 +1,82 @@
-using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace CombatStats.CombatStatsCode;
 
 /// <summary>
-/// Holds informational statistics for the currently active run. This class never writes to game state.
+/// Holds statistics for every player visible to this client. It only observes game events and never changes game state.
 /// </summary>
 public sealed class RunStatsTracker
 {
     public static RunStatsTracker Instance { get; } = new();
 
     private readonly HashSet<ulong> _playersWithIgnoredStartingHp = [];
+    private RunStatsRecord? _activeRun;
 
     public RunStats Stats { get; private set; } = new();
+    public IReadOnlyList<PlayerRunStats> PlayerStats => _activeRun?.PlayerStats ?? [];
+    public RunStatsRecord? ActiveRun => _activeRun;
 
     public event Action? Changed;
 
-    public void Reset()
+    public void OpenRun(RunState state)
     {
-        Stats = new RunStats();
         _playersWithIgnoredStartingHp.Clear();
-        NotifyChanged();
+        _activeRun = RunStatsStore.OpenRun(state);
+        EnsurePlayers(state);
+        Stats = GetStats(LocalContext.GetMe(state));
+        Changed?.Invoke();
+    }
+
+    public void MarkCurrentRunCompleted()
+    {
+        if (_activeRun == null || _activeRun.Completed)
+        {
+            return;
+        }
+
+        _activeRun.Completed = true;
+        _activeRun.CompletedAt = DateTimeOffset.UtcNow;
+        Persist();
+        Changed?.Invoke();
     }
 
     public void StartCombat()
     {
-        Stats.CombatsEntered++;
+        foreach (PlayerRunStats playerStats in PlayerStats)
+        {
+            playerStats.Stats.CombatsEntered++;
+        }
         NotifyChanged();
     }
 
     public void RecordDamage(Creature receiver, Creature? dealer, DamageResult result)
     {
-        if (IsMine(dealer) && receiver.IsEnemy)
+        Player? dealerPlayer = GetOwner(dealer);
+        if (dealerPlayer != null && receiver.IsEnemy)
         {
-            Stats.DamageDealt += result.UnblockedDamage;
-            Stats.EnemyBlockRemoved += result.BlockedDamage;
-            Stats.OverkillDamage += result.OverkillDamage;
+            RunStats stats = GetStats(dealerPlayer);
+            stats.DamageDealt += result.UnblockedDamage;
+            stats.EnemyBlockRemoved += result.BlockedDamage;
+            stats.OverkillDamage += result.OverkillDamage;
 
             if (result.WasTargetKilled)
             {
-                Stats.EnemiesKilled++;
+                stats.EnemiesKilled++;
             }
         }
 
-        if (LocalContext.IsMe(receiver))
+        Player? receiverPlayer = GetOwner(receiver);
+        if (receiverPlayer != null)
         {
-            Stats.DamageTaken += result.UnblockedDamage;
-            Stats.BlockPrevented += result.BlockedDamage;
+            RunStats stats = GetStats(receiverPlayer);
+            stats.DamageTaken += result.UnblockedDamage;
+            stats.BlockPrevented += result.BlockedDamage;
         }
 
         NotifyChanged();
@@ -58,108 +84,103 @@ public sealed class RunStatsTracker
 
     public void RecordBlock(Creature receiver, int amount)
     {
-        if (IsMine(receiver))
+        Player? player = GetOwner(receiver);
+        if (player != null)
         {
-            Stats.BlockGained += amount;
+            GetStats(player).BlockGained += amount;
             NotifyChanged();
         }
     }
 
     public void RecordCardPlayed(CardModel card)
     {
-        if (LocalContext.IsMine(card))
+        Player? player = GetOwner(card);
+        if (player != null)
         {
-            Stats.CardsPlayed++;
+            GetStats(player).CardsPlayed++;
             NotifyChanged();
         }
     }
 
     public void RecordCardGenerated(CardModel card, Player? creator)
     {
-        if (LocalContext.IsMe(creator) || LocalContext.IsMine(card))
+        Player? player = creator ?? GetOwner(card);
+        if (player != null)
         {
-            Stats.CardsGenerated++;
+            GetStats(player).CardsGenerated++;
             NotifyChanged();
         }
     }
 
     public void RecordCardDrawn(CardModel card)
     {
-        if (LocalContext.IsMine(card))
+        Player? player = GetOwner(card);
+        if (player != null)
         {
-            Stats.CardsDrawn++;
+            GetStats(player).CardsDrawn++;
             NotifyChanged();
         }
     }
 
     public void RecordCardDiscarded(CardModel card)
     {
-        if (LocalContext.IsMine(card))
+        Player? player = GetOwner(card);
+        if (player != null)
         {
-            Stats.CardsDiscarded++;
+            GetStats(player).CardsDiscarded++;
             NotifyChanged();
         }
     }
 
     public void RecordCardExhausted(CardModel card)
     {
-        if (LocalContext.IsMine(card))
+        Player? player = GetOwner(card);
+        if (player != null)
         {
-            Stats.CardsExhausted++;
+            GetStats(player).CardsExhausted++;
             NotifyChanged();
         }
     }
 
     public void RecordEnergySpent(Player player, int amount)
     {
-        if (LocalContext.IsMe(player))
-        {
-            Stats.EnergySpent += amount;
-            NotifyChanged();
-        }
+        GetStats(player).EnergySpent += amount;
+        NotifyChanged();
     }
 
     public void RecordPotionUsed(PotionModel potion)
     {
-        if (LocalContext.IsMine(potion))
+        Player? player = GetOwner(potion);
+        if (player != null)
         {
-            Stats.PotionsUsed++;
+            GetStats(player).PotionsUsed++;
             NotifyChanged();
         }
     }
 
     public void RecordOrbChanneled(OrbModel orb)
     {
-        if (LocalContext.IsMe(orb.Owner))
-        {
-            Stats.OrbsChanneled++;
-            NotifyChanged();
-        }
+        GetStats(orb.Owner).OrbsChanneled++;
+        NotifyChanged();
     }
 
     public void RecordSummoned(Player player, int amount)
     {
-        if (LocalContext.IsMe(player))
-        {
-            Stats.SummonsCreated += amount;
-            NotifyChanged();
-        }
+        GetStats(player).SummonsCreated += amount;
+        NotifyChanged();
     }
 
     public void RecordStars(Player player, int amount)
     {
-        if (!LocalContext.IsMe(player))
-        {
-            return;
-        }
+        RunStats stats = GetStats(player);
 
         if (amount >= 0)
         {
-            Stats.StarsGained += amount;
+            stats.StarsGained += amount;
         }
         else
         {
-            Stats.StarsSpent -= amount;
+            stats.StarsSpent -= amount;
         }
 
         NotifyChanged();
@@ -167,19 +188,21 @@ public sealed class RunStatsTracker
 
     public void RecordPowerApplied(PowerModel power, decimal amount, Creature? applier)
     {
-        if (!IsMine(applier) || !power.Owner.IsEnemy || amount <= 0)
+        Player? player = GetOwner(applier);
+        if (player == null || !power.Owner.IsEnemy || amount <= 0)
         {
             return;
         }
 
-        Stats.PowerApplications++;
-        Stats.PowerStacksApplied += amount;
+        RunStats stats = GetStats(player);
+        stats.PowerApplications++;
+        stats.PowerStacksApplied += amount;
 
         if (power.GetTypeForAmount(amount) == PowerType.Debuff)
         {
-            Stats.DebuffApplications++;
-            Stats.DebuffStacksApplied += amount;
-            Stats.AddDebuff(power.Id.Entry, amount);
+            stats.DebuffApplications++;
+            stats.DebuffStacksApplied += amount;
+            stats.AddDebuff(power.Id.Entry, amount);
         }
 
         NotifyChanged();
@@ -187,16 +210,13 @@ public sealed class RunStatsTracker
 
     public void RecordHealing(Creature creature, int hpBeforeHealing)
     {
-        if (!LocalContext.IsMe(creature))
+        Player? player = GetOwner(creature);
+        if (player == null)
         {
             return;
         }
 
-        // A newly created player is healed from 0 to their maximum HP during run setup.
-        // Ignore that one baseline event, but retain healing from campfires, events, and combat.
-        Player? player = creature.Player;
-        if (player != null &&
-            !_playersWithIgnoredStartingHp.Contains(player.NetId) &&
+        if (!_playersWithIgnoredStartingHp.Contains(player.NetId) &&
             !CombatManager.Instance.IsInProgress &&
             hpBeforeHealing == 0 &&
             creature.CurrentHp == creature.MaxHp)
@@ -205,49 +225,130 @@ public sealed class RunStatsTracker
             return;
         }
 
-        Stats.HealingReceived += Math.Max(0, creature.CurrentHp - hpBeforeHealing);
+        GetStats(player).HealingReceived += Math.Max(0, creature.CurrentHp - hpBeforeHealing);
         NotifyChanged();
     }
 
-    private static bool IsMine(Creature? creature) =>
-        LocalContext.IsMe(creature) || LocalContext.IsMe(creature?.PetOwner);
+    private void EnsurePlayers(RunState state)
+    {
+        foreach (Player player in state.Players)
+        {
+            EnsurePlayer(player, LocalContext.IsMe(player) ? "You" : $"Player {PlayerStats.Count + 1}");
+        }
 
-    private void NotifyChanged() => Changed?.Invoke();
+        if (PlayerStats.Count == 0)
+        {
+            return;
+        }
+
+        // Records made by earlier versions only contain local stats. Preserve those when a run is resumed.
+        PlayerRunStats local = PlayerStats.FirstOrDefault(entry => entry.PlayerId == _activeRun!.LocalPlayerId) ?? PlayerStats[0];
+        if (local.Stats.IsEmpty() && !_activeRun!.Stats.IsEmpty())
+        {
+            local.Stats = _activeRun.Stats;
+        }
+    }
+
+    private RunStats GetStats(Player? player)
+    {
+        if (player == null)
+        {
+            return Stats;
+        }
+
+        return EnsurePlayer(player, LocalContext.IsMe(player) ? "You" : $"Player {PlayerStats.Count + 1}").Stats;
+    }
+
+    private PlayerRunStats EnsurePlayer(Player player, string fallbackName)
+    {
+        if (_activeRun == null)
+        {
+            return new PlayerRunStats { PlayerId = player.NetId, DisplayName = fallbackName };
+        }
+
+        PlayerRunStats? existing = _activeRun.PlayerStats.FirstOrDefault(entry => entry.PlayerId == player.NetId);
+        if (existing != null)
+        {
+            if (LocalContext.IsMe(player))
+            {
+                existing.DisplayName = "You";
+            }
+            return existing;
+        }
+
+        PlayerRunStats entry = new() { PlayerId = player.NetId, DisplayName = fallbackName };
+        _activeRun.PlayerStats.Add(entry);
+        return entry;
+    }
+
+    private static Player? GetOwner(Creature? creature) => creature?.Player ?? creature?.PetOwner;
+
+    private static Player? GetOwner(object model)
+    {
+        return model.GetType().GetProperty("Owner")?.GetValue(model) as Player
+            ?? model.GetType().GetProperty("Player")?.GetValue(model) as Player;
+    }
+
+    private void NotifyChanged()
+    {
+        Persist();
+        Changed?.Invoke();
+    }
+
+    private void Persist()
+    {
+        if (_activeRun == null)
+        {
+            return;
+        }
+
+        PlayerRunStats? local = _activeRun.PlayerStats.FirstOrDefault(entry => entry.PlayerId == _activeRun.LocalPlayerId);
+        _activeRun.Stats = local?.Stats ?? Stats;
+        _activeRun.UpdatedAt = DateTimeOffset.UtcNow;
+        RunStatsStore.Save(_activeRun);
+    }
 }
 
 public sealed class RunStats
 {
-    private readonly Dictionary<string, decimal> _debuffStacksById = new(StringComparer.OrdinalIgnoreCase);
+    public int CombatsEntered { get; set; }
+    public int DamageDealt { get; set; }
+    public int EnemyBlockRemoved { get; set; }
+    public int OverkillDamage { get; set; }
+    public int EnemiesKilled { get; set; }
+    public int DamageTaken { get; set; }
+    public int BlockPrevented { get; set; }
+    public int BlockGained { get; set; }
+    public int CardsPlayed { get; set; }
+    public int CardsGenerated { get; set; }
+    public int CardsDrawn { get; set; }
+    public int CardsDiscarded { get; set; }
+    public int CardsExhausted { get; set; }
+    public int EnergySpent { get; set; }
+    public int PotionsUsed { get; set; }
+    public int OrbsChanneled { get; set; }
+    public int SummonsCreated { get; set; }
+    public int StarsGained { get; set; }
+    public int StarsSpent { get; set; }
+    public int PowerApplications { get; set; }
+    public decimal PowerStacksApplied { get; set; }
+    public int DebuffApplications { get; set; }
+    public decimal DebuffStacksApplied { get; set; }
+    public int HealingReceived { get; set; }
+    public Dictionary<string, decimal> DebuffStacksById { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public int CombatsEntered { get; internal set; }
-    public int DamageDealt { get; internal set; }
-    public int EnemyBlockRemoved { get; internal set; }
-    public int OverkillDamage { get; internal set; }
-    public int EnemiesKilled { get; internal set; }
-    public int DamageTaken { get; internal set; }
-    public int BlockPrevented { get; internal set; }
-    public int BlockGained { get; internal set; }
-    public int CardsPlayed { get; internal set; }
-    public int CardsGenerated { get; internal set; }
-    public int CardsDrawn { get; internal set; }
-    public int CardsDiscarded { get; internal set; }
-    public int CardsExhausted { get; internal set; }
-    public int EnergySpent { get; internal set; }
-    public int PotionsUsed { get; internal set; }
-    public int OrbsChanneled { get; internal set; }
-    public int SummonsCreated { get; internal set; }
-    public int StarsGained { get; internal set; }
-    public int StarsSpent { get; internal set; }
-    public int PowerApplications { get; internal set; }
-    public decimal PowerStacksApplied { get; internal set; }
-    public int DebuffApplications { get; internal set; }
-    public decimal DebuffStacksApplied { get; internal set; }
-    public int HealingReceived { get; internal set; }
-
-    public IReadOnlyDictionary<string, decimal> DebuffStacksById => _debuffStacksById;
-
-    internal void AddDebuff(string id, decimal amount)
+    public void AddDebuff(string id, decimal amount)
     {
-        _debuffStacksById[id] = _debuffStacksById.GetValueOrDefault(id) + amount;
+        DebuffStacksById[id] = DebuffStacksById.GetValueOrDefault(id) + amount;
     }
+
+    public bool IsEmpty() => DamageDealt == 0 && DamageTaken == 0 && BlockGained == 0 && CardsPlayed == 0 &&
+        HealingReceived == 0 && PowerApplications == 0 && CombatsEntered == 0;
+}
+
+public sealed class PlayerRunStats
+{
+    public ulong PlayerId { get; set; }
+    public string DisplayName { get; set; } = "Player";
+    public RunStats Stats { get; set; } = new();
 }

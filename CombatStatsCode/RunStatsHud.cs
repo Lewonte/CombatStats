@@ -22,15 +22,6 @@ public static class CombatUiPatch
         hud.Bind();
     }
 
-    [HarmonyPrefix]
-    [HarmonyPatch(typeof(NCombatUi), nameof(NCombatUi._Input))]
-    private static void ToggleHudWithF8(InputEvent @event)
-    {
-        if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F8 })
-        {
-            CombatStatsSettings.Instance.ToggleHudVisibility();
-        }
-    }
 }
 
 public partial class RunStatsHud : PanelContainer
@@ -39,15 +30,18 @@ public partial class RunStatsHud : PanelContainer
     private VBoxContainer? _settingsContainer;
     private Button? _settingsButton;
     private bool _settingsOpen;
+    private bool _f8Held;
 
     public void Bind()
     {
         SetAnchorsPreset(LayoutPreset.TopRight);
         OffsetLeft = -430;
-        OffsetTop = 72;
+        OffsetTop = 145;
         OffsetRight = -24;
         OffsetBottom = 0;
         MouseFilter = MouseFilterEnum.Stop;
+        ZIndex = 100;
+        SetProcess(true);
 
         AddThemeStyleboxOverride("panel", new StyleBoxFlat
         {
@@ -117,6 +111,19 @@ public partial class RunStatsHud : PanelContainer
         RunStatsTracker.Instance.Changed -= Refresh;
         CombatStatsSettings.Instance.Changed -= ApplySettings;
         base._ExitTree();
+    }
+
+    public override void _Process(double delta)
+    {
+        // Poll the key rather than relying on an NCombatUi input callback. Godot UI controls may consume
+        // that callback before Harmony sees it, while a processing node continues working when hidden.
+        bool f8Pressed = Input.IsKeyPressed(Key.F8);
+        if (f8Pressed && !_f8Held)
+        {
+            CombatStatsSettings.Instance.ToggleHudVisibility();
+        }
+
+        _f8Held = f8Pressed;
     }
 
     private void AddSectionToggle(StatsSection section, string text)

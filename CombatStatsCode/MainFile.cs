@@ -16,7 +16,7 @@ public partial class MainFile : Node
     public static void Initialize()
     {
         CombatStatsSettings.Instance.Load();
-        RunManager.Instance.RunStarted += _ => RunStatsTracker.Instance.Reset();
+        RunManager.Instance.RunStarted += RunStatsTracker.Instance.OpenRun;
 
         Harmony harmony = new(ModId);
         harmony.PatchAll();

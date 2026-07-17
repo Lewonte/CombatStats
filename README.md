@@ -11,7 +11,9 @@ An informational Slay the Spire 2 mod that displays live, per-run combat statist
 - Power applications and stacks applied to enemies
 - Debuff applications and stacks, broken down by debuff ID (for example `Vulnerable`, `Weak`, and `Frail`)
 
-The tracker resets when a new run starts. It is intentionally informational only and declares `affects_gameplay: false`.
+Statistics are saved continuously for the active run and restored after save-and-quit. At the end of a run, CombatStats adds a full recap to the game-over screen; its **History** button browses the last 50 completed run summaries. The vanilla run-history screen also shows a compact CombatStats recap when a matching saved run is selected.
+
+In multiplayer, each player records and saves only their own actions locally. This keeps the mod informational and avoids modifying multiplayer game state. The mod declares `affects_gameplay: false`.
 
 ## Display settings
 
